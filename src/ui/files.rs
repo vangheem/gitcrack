@@ -5,9 +5,42 @@ use ratatui::widgets::Fill;
 use crate::model::{FileDiff, ViewState};
 
 use super::text::{
-    dim, draw, draw_stats, fill, stats_width, status_fg, style, truncate, width, window_start,
+    dim, draw, draw_stats, fill, fit_path, stats_width, status_fg, style, width, window_start,
 };
 use super::theme::{BORDER, CANVAS, FG, GRAY, SELECTED};
+
+pub fn pane_width(body_width: u16, view: &ViewState) -> u16 {
+    const PREFERRED_MIN: u16 = 48;
+    const HARD_MAX: u16 = 80;
+    if body_width == 0 {
+        return 0;
+    }
+    let max = (body_width / 2).clamp(1, HARD_MAX).min(body_width);
+    let min = PREFERRED_MIN.min(max);
+    let desired = view
+        .files
+        .iter()
+        .map(desired_pane_width)
+        .max()
+        .unwrap_or(0)
+        .min(usize::from(u16::MAX)) as u16;
+    desired.clamp(min, max)
+}
+
+fn desired_pane_width(file: &FileDiff) -> usize {
+    let path_w = width(&file.display_path());
+    let marker = file.kind.marker();
+    let marker_w = if marker.is_empty() {
+        0
+    } else {
+        width(marker) + 1
+    };
+    let stats_reserve = stats_width(file.additions, file.deletions) + 1;
+    let inset = 1;
+    let glyph_gap = 2;
+    let border = 1;
+    path_w + marker_w + stats_reserve + inset + glyph_gap + border
+}
 
 pub fn render(frame: &mut Frame, area: Rect, view: &ViewState) {
     if area.is_empty() {
@@ -77,7 +110,7 @@ fn render_row(frame: &mut Frame, area: Rect, y: u16, file: &FileDiff, selected: 
     if show_marker {
         path_budget -= marker_w;
     }
-    let path = truncate(&file.display_path(), path_budget);
+    let path = fit_path(&file.display_path(), path_budget);
     draw(frame, x + 2, y, &path, path_budget, style(FG, bg));
     if show_marker {
         let marker_x = x + 2 + width(&path) as u16 + 1;

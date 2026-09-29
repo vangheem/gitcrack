@@ -62,6 +62,165 @@ pub fn truncate(text: &str, max: usize) -> String {
     out
 }
 
+pub fn fit_path(path: &str, max: usize) -> String {
+    if width(path) <= max {
+        return path.to_string();
+    }
+    if let Some((old, new)) = path.split_once(" -> ") {
+        return fit_rename(old, new, max);
+    }
+    fit_segments(path, max)
+}
+
+fn fit_segments(path: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    let Some((parent, file)) = path.rsplit_once('/') else {
+        return fit_leaf(path, max);
+    };
+    if parent.is_empty() || file.is_empty() {
+        return fit_leaf(file, max);
+    }
+    let file_w = width(file);
+    if file_w >= max {
+        return fit_leaf(file, max);
+    }
+    let parent_budget = max - file_w - 1;
+    match compress_dirs(parent, parent_budget) {
+        Some(shown) => format!("{shown}/{file}"),
+        None => file.to_string(),
+    }
+}
+
+fn compress_dirs(parent: &str, budget: usize) -> Option<String> {
+    if width(parent) <= budget {
+        return Some(parent.to_string());
+    }
+    const DOTS: &str = "...";
+    let dots_w = width(DOTS);
+    let parts: Vec<&str> = parent.split('/').filter(|part| !part.is_empty()).collect();
+    if parts.is_empty() || budget < dots_w {
+        return None;
+    }
+    let bridge = dots_w + 1;
+    if budget >= bridge {
+        let head_budget = budget - bridge;
+        if let Some(head) = leading_dirs(&parts, head_budget) {
+            return Some(format!("{head}/{DOTS}"));
+        }
+        let stub = take_prefix(parts[0], head_budget);
+        if !stub.is_empty() {
+            return Some(format!("{stub}{DOTS}"));
+        }
+    }
+    Some(DOTS.to_string())
+}
+
+fn leading_dirs(parts: &[&str], budget: usize) -> Option<String> {
+    if budget == 0 {
+        return None;
+    }
+    let mut used = 0;
+    let mut count = 0;
+    for (i, part) in parts.iter().enumerate() {
+        let extra = width(part) + usize::from(i > 0);
+        if used + extra > budget {
+            break;
+        }
+        used += extra;
+        count = i + 1;
+    }
+    if count == 0 {
+        None
+    } else {
+        Some(parts[..count].join("/"))
+    }
+}
+
+fn fit_leaf(name: &str, max: usize) -> String {
+    if width(name) <= max {
+        return name.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    const DOTS: &str = "...";
+    let dots_w = width(DOTS);
+    if max <= dots_w {
+        return take_suffix(name, max);
+    }
+    format!("{DOTS}{}", take_suffix(name, max - dots_w))
+}
+
+fn fit_rename(old: &str, new: &str, max: usize) -> String {
+    const ARROW: &str = " -> ";
+    let arrow_w = width(ARROW);
+    if max <= arrow_w {
+        return fit_segments(new, max);
+    }
+    let avail = max - arrow_w;
+    let new_w = width(new);
+    if new_w <= avail {
+        let old_budget = avail - new_w;
+        if old_budget == 0 {
+            return new.to_string();
+        }
+        let old_shown = fit_segments(old, old_budget);
+        if old_shown.is_empty() {
+            return new.to_string();
+        }
+        return format!("{old_shown}{ARROW}{new}");
+    }
+    let file_w = width(file_name(new)).min(avail);
+    let new_budget = file_w.max(avail / 2).min(avail);
+    let old_budget = avail - new_budget;
+    let new_shown = fit_segments(new, new_budget);
+    let slack = new_budget.saturating_sub(width(&new_shown));
+    let old_shown = fit_segments(old, old_budget + slack);
+    if old_shown.is_empty() {
+        return new_shown;
+    }
+    let combined = format!("{old_shown}{ARROW}{new_shown}");
+    if width(&combined) <= max {
+        combined
+    } else {
+        new_shown
+    }
+}
+
+fn file_name(path: &str) -> &str {
+    path.rsplit_once('/').map(|(_, file)| file).unwrap_or(path)
+}
+
+fn take_prefix(text: &str, max: usize) -> String {
+    let mut used = 0;
+    let mut end = 0;
+    for (idx, ch) in text.char_indices() {
+        let ch_w = ch.width().unwrap_or(0);
+        if used + ch_w > max {
+            break;
+        }
+        used += ch_w;
+        end = idx + ch.len_utf8();
+    }
+    text[..end].to_string()
+}
+
+fn take_suffix(text: &str, max: usize) -> String {
+    let mut used = 0;
+    let mut start = text.len();
+    for (idx, ch) in text.char_indices().rev() {
+        let ch_w = ch.width().unwrap_or(0);
+        if used + ch_w > max {
+            break;
+        }
+        used += ch_w;
+        start = idx;
+    }
+    text[start..].to_string()
+}
+
 pub fn visible(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {
@@ -181,4 +340,40 @@ pub fn scrollbar(
         .position(position)
         .viewport_content_length(viewport);
     frame.render_stateful_widget(bar, area, &mut state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fit_path, width};
+
+    #[test]
+    fn fit_path_keeps_filename_then_start() {
+        let path = "src/ui/components/widgets/button.rs";
+        let shown = fit_path(path, 22);
+        assert_eq!(shown, "src/ui/.../button.rs");
+        assert!(shown.ends_with("button.rs"));
+        assert!(shown.starts_with("src"));
+        assert_eq!(fit_path("a/b/c/d/e/file.rs", 15), "a/b/.../file.rs");
+        assert_eq!(fit_path(path, 80), path);
+    }
+
+    #[test]
+    fn fit_path_stays_within_budget() {
+        let paths = [
+            "src/ui/components/widgets/button.rs",
+            "a/b/c/d/e/file.rs",
+            "verylongdirectory/file.rs",
+            "file.rs",
+            "src/old/name.rs -> src/new/deep/name.rs",
+        ];
+        for path in paths {
+            for max in [0, 1, 4, 8, 12, 15, 20, 24, 40, 80] {
+                let shown = fit_path(path, max);
+                assert!(width(&shown) <= max, "{path} @ {max} => {shown}");
+                if width(path) <= max {
+                    assert_eq!(shown, path);
+                }
+            }
+        }
+    }
 }

@@ -30,8 +30,9 @@ pub fn render(frame: &mut Frame, view: &ViewState) {
     ])
     .areas(area);
     header::render(frame, header_area, view);
+    let file_w = files::pane_width(body.width, view);
     let [file_area, diff_area] =
-        Layout::horizontal([Constraint::Length(36), Constraint::Fill(1)]).areas(body);
+        Layout::horizontal([Constraint::Length(file_w), Constraint::Fill(1)]).areas(body);
     files::render(frame, file_area, view);
     diff::render(frame, diff_area, view);
     footer::render(frame, footer_area, view);

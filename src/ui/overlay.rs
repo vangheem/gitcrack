@@ -10,17 +10,19 @@ use super::text::{self, centered, draw, fill, style, truncate, width, window_sta
 use super::theme::{ACCENT, BORDER, FG, GRAY, GREEN, PANEL, SELECTED, YELLOW};
 
 const HELP: &[&str] = &[
-    "shift-up/down changes file",
-    "up/down scrolls the diff",
+    "up/down or tab/shift-tab changes file",
+    "shift-up/down or j/k scrolls",
     "page up/down pages",
+    "space pages the diff",
     "ctrl-u/ctrl-d half-pages",
     "home/end jumps",
-    "[ and ] are file fallbacks",
+    "[ and ] also change file",
     "c, b, p open pickers",
     "w returns to the working tree",
     "r refreshes    q or ctrl-c quits",
     "picker: up/down moves, enter confirms",
     "space sets a commit range base",
+    "drag selects text and copies it",
     "esc or q closes",
 ];
 

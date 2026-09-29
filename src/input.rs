@@ -55,14 +55,19 @@ fn review_action(key: KeyEvent) -> Action {
         };
     }
     match key.code {
-        KeyCode::Up if shift => Action::PrevFile,
-        KeyCode::Down if shift => Action::NextFile,
-        KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => Action::ScrollUp,
-        KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => Action::ScrollDown,
+        KeyCode::Up if shift => Action::ScrollUp,
+        KeyCode::Down if shift => Action::ScrollDown,
+        KeyCode::Up => Action::PrevFile,
+        KeyCode::Down => Action::NextFile,
+        KeyCode::Char('k') | KeyCode::Char('K') => Action::ScrollUp,
+        KeyCode::Char('j') | KeyCode::Char('J') => Action::ScrollDown,
         KeyCode::PageUp => Action::PageUp,
-        KeyCode::PageDown => Action::PageDown,
+        KeyCode::PageDown | KeyCode::Char(' ') => Action::PageDown,
         KeyCode::Home => Action::ScrollTop,
         KeyCode::End => Action::ScrollBottom,
+        KeyCode::BackTab => Action::PrevFile,
+        KeyCode::Tab if shift => Action::PrevFile,
+        KeyCode::Tab => Action::NextFile,
         KeyCode::Char('[') => Action::PrevFile,
         KeyCode::Char(']') => Action::NextFile,
         KeyCode::Char('c') | KeyCode::Char('C') => Action::OpenCommits,
@@ -104,22 +109,42 @@ mod tests {
     }
 
     #[test]
-    fn shift_arrows_change_file_and_arrows_scroll() {
+    fn arrows_change_file_and_shift_or_jk_scroll() {
         assert_eq!(
-            action_for(key(KeyCode::Down, KeyModifiers::SHIFT), Overlay::None),
+            action_for(key(KeyCode::Down, KeyModifiers::empty()), Overlay::None),
             Action::NextFile
         );
         assert_eq!(
-            action_for(key(KeyCode::Up, KeyModifiers::SHIFT), Overlay::None),
+            action_for(key(KeyCode::Up, KeyModifiers::empty()), Overlay::None),
             Action::PrevFile
         );
         assert_eq!(
-            action_for(key(KeyCode::Down, KeyModifiers::empty()), Overlay::None),
+            action_for(key(KeyCode::Down, KeyModifiers::SHIFT), Overlay::None),
             Action::ScrollDown
         );
         assert_eq!(
-            action_for(key(KeyCode::Up, KeyModifiers::empty()), Overlay::None),
+            action_for(key(KeyCode::Up, KeyModifiers::SHIFT), Overlay::None),
             Action::ScrollUp
+        );
+        assert_eq!(
+            action_for(key(KeyCode::Char('j'), KeyModifiers::empty()), Overlay::None),
+            Action::ScrollDown
+        );
+        assert_eq!(
+            action_for(key(KeyCode::Char('k'), KeyModifiers::empty()), Overlay::None),
+            Action::ScrollUp
+        );
+        assert_eq!(
+            action_for(key(KeyCode::Tab, KeyModifiers::empty()), Overlay::None),
+            Action::NextFile
+        );
+        assert_eq!(
+            action_for(key(KeyCode::BackTab, KeyModifiers::empty()), Overlay::None),
+            Action::PrevFile
+        );
+        assert_eq!(
+            action_for(key(KeyCode::Tab, KeyModifiers::SHIFT), Overlay::None),
+            Action::PrevFile
         );
     }
 
@@ -144,11 +169,26 @@ mod tests {
 
     #[test]
     fn release_events_are_ignored() {
-        let event = KeyEvent::new_with_kind(
-            KeyCode::Down,
-            KeyModifiers::empty(),
-            KeyEventKind::Release,
-        );
+        let event =
+            KeyEvent::new_with_kind(KeyCode::Down, KeyModifiers::empty(), KeyEventKind::Release);
         assert_eq!(action_for(event, Overlay::None), Action::None);
+    }
+
+    #[test]
+    fn space_pages_down_unless_picking_a_commit_base() {
+        assert_eq!(
+            action_for(
+                key(KeyCode::Char(' '), KeyModifiers::empty()),
+                Overlay::None
+            ),
+            Action::PageDown
+        );
+        assert_eq!(
+            action_for(
+                key(KeyCode::Char(' '), KeyModifiers::empty()),
+                Overlay::Commits
+            ),
+            Action::MarkBase
+        );
     }
 }

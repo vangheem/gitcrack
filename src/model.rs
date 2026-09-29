@@ -28,8 +28,13 @@ impl RepoContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewTarget {
     WorkingTree,
-    Commit { rev: String },
-    Range { base: String, head: String },
+    Commit {
+        rev: String,
+    },
+    Range {
+        base: String,
+        head: String,
+    },
     PullRequest {
         number: u64,
         title: String,
@@ -260,11 +265,9 @@ impl ViewState {
     }
 
     pub fn stat_summary(&self) -> (u32, u32) {
-        self.files
-            .iter()
-            .fold((0, 0), |(adds, dels), file| {
-                (adds + file.additions, dels + file.deletions)
-            })
+        self.files.iter().fold((0, 0), |(adds, dels), file| {
+            (adds + file.additions, dels + file.deletions)
+        })
     }
 
     pub fn overlay_len(&self) -> usize {

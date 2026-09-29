@@ -15,6 +15,8 @@ use crate::model::{Overlay, ViewState};
 use self::text::style;
 use self::theme::{FG, GRAY, PANEL};
 
+pub use self::text::paint_selection;
+
 pub fn render(frame: &mut Frame, view: &ViewState) {
     let area = frame.area();
     if area.height < 20 || area.width < 50 {

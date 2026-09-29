@@ -6,7 +6,7 @@ use crate::model::ViewState;
 use super::text::{draw, fill, style, truncate, width};
 use super::theme::{FG, GRAY, PANEL, RED};
 
-const HINTS: &str = "shift-up/down file  up/down scroll  c commits  b branch  p prs  w tree  r refresh  ? help  q quit";
+const HINTS: &str = "up/down tab file  shift-up/down j/k scroll  space page  c commits  b branch  p prs  w tree  r refresh  ? help  q quit";
 
 pub fn render(frame: &mut Frame, area: Rect, view: &ViewState) {
     fill(frame, area, style(FG, PANEL));

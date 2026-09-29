@@ -25,12 +25,13 @@ The left pane is the file list. The right pane is the diff for the selected file
 
 | Key | Action |
 | --- | --- |
-| shift-up / shift-down | previous / next file |
-| up / down, or k / j | scroll the diff |
+| up / down, or tab / shift-tab | previous / next file |
+| shift-up / shift-down, or k / j | scroll the diff |
 | page up / page down | page the diff |
+| space | page the diff |
 | ctrl-u / ctrl-d | half-page |
 | home / end | top / bottom of the diff |
-| `[` / `]` | previous / next file, if shift-arrows are unavailable |
+| `[` / `]` | previous / next file |
 | c | pick a commit |
 | b | diff a branch against the default branch |
 | p | list open pull requests via `gh` |
@@ -41,4 +42,4 @@ The left pane is the file list. The right pane is the diff for the selected file
 
 In a picker, up/down moves and enter opens the selection. Esc or q closes the picker. In the commit picker, space sets a range base; enter on another commit diffs that range.
 
-The mouse wheel scrolls the diff. gitcrack does not commit, checkout, or otherwise change the repo.
+The mouse wheel scrolls the diff. Drag to select text; the selection is copied to the clipboard. gitcrack does not commit, checkout, or otherwise change the repo.

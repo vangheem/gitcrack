@@ -5,15 +5,17 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyboardEnhancementFlags, MouseEventKind,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyboardEnhancementFlags, MouseButton,
+    MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 
+use crate::clipboard;
 use crate::gh;
 use crate::git;
 use crate::input::{self, Action};
 use crate::model::{FileDiff, Overlay, RepoContext, ReviewTarget, ViewState};
+use crate::select::{Screen, Selection};
 use crate::ui;
 
 const COMMIT_LIMIT: usize = 200;
@@ -38,21 +40,35 @@ fn run_loop(view: &mut ViewState) -> Result<()> {
     let _guard = TerminalGuard;
     execute!(stdout(), EnableMouseCapture)?;
     let _ = execute!(stdout(), PushKeyboardEnhancementFlags(keyboard_flags()));
+    let mut screen = Screen::default();
+    let mut selection = None;
+    let mut dragging = false;
 
     loop {
-        terminal.draw(|frame| ui::render(frame, view))?;
+        let shown = selection.filter(|sel: &Selection| !sel.is_empty());
+        terminal.draw(|frame| {
+            ui::render(frame, view);
+            if let Some(sel) = shown {
+                ui::paint_selection(frame, sel);
+            }
+            screen = Screen::from_buffer(frame.buffer_mut());
+        })?;
         let Some(event) = poll_event()? else {
             continue;
         };
         match event {
             Event::Key(key) => {
+                selection = None;
+                dragging = false;
                 let action = input::action_for(key, view.overlay);
                 if action == Action::Quit {
                     break;
                 }
                 apply_action(view, action, page_size(&terminal));
             }
-            Event::Mouse(mouse) => apply_mouse(view, mouse.kind),
+            Event::Mouse(mouse) => {
+                apply_mouse(view, mouse, &screen, &mut selection, &mut dragging);
+            }
             _ => {}
         }
     }
@@ -101,15 +117,73 @@ fn page_size(terminal: &ratatui::DefaultTerminal) -> usize {
     usize::from(rows).saturating_sub(3).max(1)
 }
 
-fn apply_mouse(view: &mut ViewState, kind: MouseEventKind) {
-    if view.overlay != Overlay::None {
-        return;
-    }
-    match kind {
-        MouseEventKind::ScrollUp => view.scroll_by(-3),
-        MouseEventKind::ScrollDown => view.scroll_by(3),
+fn apply_mouse(
+    view: &mut ViewState,
+    mouse: MouseEvent,
+    screen: &Screen,
+    selection: &mut Option<Selection>,
+    dragging: &mut bool,
+) {
+    let pos = screen.clamp(mouse.column, mouse.row);
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            *selection = Some(Selection {
+                anchor: pos,
+                head: pos,
+            });
+            *dragging = true;
+        }
+        MouseEventKind::Drag(_) if *dragging => {
+            if let Some(sel) = selection.as_mut() {
+                sel.head = pos;
+            }
+        }
+        MouseEventKind::Up(_) if *dragging => {
+            *dragging = false;
+            finish_selection(view, screen, selection, pos);
+        }
+        MouseEventKind::ScrollUp => wheel(view, selection, dragging, -3),
+        MouseEventKind::ScrollDown => wheel(view, selection, dragging, 3),
         _ => {}
     }
+}
+
+fn wheel(
+    view: &mut ViewState,
+    selection: &mut Option<Selection>,
+    dragging: &mut bool,
+    delta: isize,
+) {
+    *selection = None;
+    *dragging = false;
+    if view.overlay == Overlay::None {
+        view.scroll_by(delta);
+    }
+}
+
+fn finish_selection(
+    view: &mut ViewState,
+    screen: &Screen,
+    selection: &mut Option<Selection>,
+    pos: (u16, u16),
+) {
+    let Some(mut sel) = selection.take() else {
+        return;
+    };
+    sel.head = pos;
+    if sel.is_empty() {
+        return;
+    }
+    let text = screen.selected_text(sel);
+    if text.is_empty() {
+        return;
+    }
+    view.status = if clipboard::copy(&text) {
+        "copied".to_string()
+    } else {
+        "copy failed".to_string()
+    };
+    *selection = Some(sel);
 }
 
 fn apply_action(view: &mut ViewState, action: Action, page: usize) {

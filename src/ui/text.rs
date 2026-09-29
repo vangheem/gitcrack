@@ -131,6 +131,36 @@ pub fn centered(area: Rect, width_pct: u32, height_pct: u32) -> Rect {
     }
 }
 
+pub fn paint_selection(frame: &mut Frame, selection: crate::select::Selection) {
+    let buffer = frame.buffer_mut();
+    let area = buffer.area;
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let (start, end) = selection.ordered();
+    let y0 = start.1.max(area.y);
+    let y1 = end.1.min(area.bottom().saturating_sub(1));
+    if y0 > y1 {
+        return;
+    }
+    let right = area.right().saturating_sub(1);
+    for y in y0..=y1 {
+        let Some((x0, x1)) = selection.col_bounds(y) else {
+            continue;
+        };
+        let x0 = x0.max(area.x);
+        let x1 = x1.min(right);
+        if x0 > x1 {
+            continue;
+        }
+        for x in x0..=x1 {
+            if let Some(cell) = buffer.cell_mut((x, y)) {
+                cell.set_style(style(super::theme::FG, super::theme::SELECTED));
+            }
+        }
+    }
+}
+
 pub fn scrollbar(
     frame: &mut Frame,
     area: Rect,

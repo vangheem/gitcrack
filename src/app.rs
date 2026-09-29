@@ -74,7 +74,14 @@ fn run_loop(view: &mut ViewState) -> Result<()> {
                 view.loading = None;
             }
             Event::Mouse(mouse) => {
-                apply_mouse(view, mouse, &screen, &mut selection, &mut dragging);
+                apply_mouse(
+                    view,
+                    mouse,
+                    &screen,
+                    &mut selection,
+                    &mut dragging,
+                    page_size(&terminal, view),
+                );
             }
             _ => {}
         }
@@ -131,6 +138,7 @@ fn apply_mouse(
     screen: &Screen,
     selection: &mut Option<Selection>,
     dragging: &mut bool,
+    viewport: usize,
 ) {
     let pos = screen.clamp(mouse.column, mouse.row);
     match mouse.kind {
@@ -150,8 +158,8 @@ fn apply_mouse(
             *dragging = false;
             finish_selection(view, screen, selection, pos);
         }
-        MouseEventKind::ScrollUp => wheel(view, selection, dragging, -3),
-        MouseEventKind::ScrollDown => wheel(view, selection, dragging, 3),
+        MouseEventKind::ScrollUp => wheel(view, selection, dragging, -3, viewport),
+        MouseEventKind::ScrollDown => wheel(view, selection, dragging, 3, viewport),
         _ => {}
     }
 }
@@ -161,11 +169,12 @@ fn wheel(
     selection: &mut Option<Selection>,
     dragging: &mut bool,
     delta: isize,
+    viewport: usize,
 ) {
     *selection = None;
     *dragging = false;
     if view.overlay == Overlay::None {
-        view.scroll_by(delta);
+        view.scroll_by(delta, viewport);
     }
 }
 
@@ -196,13 +205,31 @@ fn finish_selection(
 
 fn loading_for(view: &ViewState, action: Action) -> Option<&'static str> {
     match action {
+        Action::OpenPullRequests => Some("loading pull requests…"),
+        Action::Refresh if view.is_pull_request() => Some("refreshing…"),
         Action::OpenMerge if view.is_pull_request() => Some("checking merge…"),
-        Action::Confirm
-            if view.overlay == Overlay::Merge
-                && view.merge.as_ref().is_some_and(|merge| merge.can_merge()) =>
-        {
-            Some("merging…")
+        Action::Confirm if gh_confirm(view) => confirm_loading(view),
+        _ => None,
+    }
+}
+
+fn gh_confirm(view: &ViewState) -> bool {
+    match view.overlay {
+        Overlay::PullRequests => view.prs.get(view.overlay_selected).is_some(),
+        Overlay::Review => {
+            view.target.pr_number().is_some()
+                && (!view.review_choice().needs_body() || !view.comment.trim().is_empty())
         }
+        Overlay::Merge => view.merge.as_ref().is_some_and(|merge| merge.can_merge()),
+        _ => false,
+    }
+}
+
+fn confirm_loading(view: &ViewState) -> Option<&'static str> {
+    match view.overlay {
+        Overlay::PullRequests => Some("loading pull request…"),
+        Overlay::Review => Some("submitting review…"),
+        Overlay::Merge => Some("merging…"),
         _ => None,
     }
 }
@@ -213,14 +240,14 @@ fn apply_action(view: &mut ViewState, action: Action, page: usize) {
         Action::None | Action::Quit => {}
         Action::NextFile => view.next_file(),
         Action::PrevFile => view.prev_file(),
-        Action::ScrollUp => view.scroll_by(-1),
-        Action::ScrollDown => view.scroll_by(1),
-        Action::PageUp => view.scroll_by(-(page as isize)),
-        Action::PageDown => view.scroll_by(page as isize),
-        Action::HalfPageUp => view.scroll_by(-(half as isize)),
-        Action::HalfPageDown => view.scroll_by(half as isize),
+        Action::ScrollUp => view.scroll_by(-1, page),
+        Action::ScrollDown => view.scroll_by(1, page),
+        Action::PageUp => view.scroll_by(-(page as isize), page),
+        Action::PageDown => view.scroll_by(page as isize, page),
+        Action::HalfPageUp => view.scroll_by(-(half as isize), page),
+        Action::HalfPageDown => view.scroll_by(half as isize, page),
         Action::ScrollTop => view.scroll = 0,
-        Action::ScrollBottom => view.scroll = usize::MAX,
+        Action::ScrollBottom => view.scroll_bottom(page),
         Action::OpenCommits => open_commits(view),
         Action::OpenBranches => open_branches(view),
         Action::OpenPullRequests => open_pull_requests(view),

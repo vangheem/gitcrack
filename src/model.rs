@@ -151,6 +151,17 @@ pub struct FileDiff {
 }
 
 impl FileDiff {
+    pub fn visible_len(&self) -> usize {
+        if self.binary {
+            self.lines
+                .iter()
+                .filter(|line| line.kind == DiffLineKind::Meta)
+                .count()
+        } else {
+            self.lines.len()
+        }
+    }
+
     pub fn display_path(&self) -> String {
         match &self.old_path {
             Some(old) if old != &self.path => format!("{old} -> {}", self.path),
@@ -557,12 +568,25 @@ impl ViewState {
         }
     }
 
-    pub fn scroll_by(&mut self, delta: isize) {
+    pub fn scroll_max(&self, viewport: usize) -> usize {
+        self.selected_file()
+            .map(|file| file.visible_len())
+            .unwrap_or(0)
+            .saturating_sub(viewport)
+    }
+
+    pub fn scroll_by(&mut self, delta: isize, viewport: usize) {
+        let max = self.scroll_max(viewport);
+        let current = self.scroll.min(max);
         if delta < 0 {
-            self.scroll = self.scroll.saturating_sub(delta.unsigned_abs());
+            self.scroll = current.saturating_sub(delta.unsigned_abs());
         } else {
-            self.scroll = self.scroll.saturating_add(delta as usize);
+            self.scroll = current.saturating_add(delta as usize).min(max);
         }
+    }
+
+    pub fn scroll_bottom(&mut self, viewport: usize) {
+        self.scroll = self.scroll_max(viewport);
     }
 
     pub fn set_files(&mut self, files: Vec<FileDiff>) {
@@ -631,6 +655,34 @@ mod tests {
             head: "abc".to_string(),
             default_branch: "main".to_string(),
         })
+    }
+
+    #[test]
+    fn scrolling_up_from_the_bottom_moves_immediately() {
+        use super::{ChangeKind, DiffLine, DiffLineKind, FileDiff, FileStatus};
+        let mut view = view();
+        view.files = vec![FileDiff {
+            path: "a.txt".to_string(),
+            old_path: None,
+            status: FileStatus::Modified,
+            kind: ChangeKind::Committed,
+            additions: 10,
+            deletions: 0,
+            binary: false,
+            lines: (0..10)
+                .map(|index| DiffLine {
+                    kind: DiffLineKind::Context,
+                    old_lineno: Some(index),
+                    new_lineno: Some(index),
+                    text: format!("line {index}"),
+                })
+                .collect(),
+        }];
+        view.scroll = usize::MAX;
+        view.scroll_by(-1, 3);
+        assert_eq!(view.scroll, 6);
+        view.scroll_by(100, 3);
+        assert_eq!(view.scroll, 7);
     }
 
     #[test]

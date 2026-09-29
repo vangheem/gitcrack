@@ -7,7 +7,7 @@ use ratatui::widgets::{Block, Clear, Paragraph};
 use crate::model::{Overlay, ReviewKind, ReviewState, ViewState};
 
 use super::text::{self, centered, draw, fill, style, truncate, width, window_start};
-use super::theme::{ACCENT, BORDER, CYAN, FG, GRAY, GREEN, PANEL, SELECTED, YELLOW};
+use super::theme::{ACCENT, BORDER, CYAN, FG, GRAY, GREEN, PANEL, RED, SELECTED, YELLOW};
 
 const HELP: &[&str] = &[
     "up/down or tab/shift-tab changes file",
@@ -22,20 +22,50 @@ const HELP: &[&str] = &[
     "r refreshes    q or ctrl-c quits",
     "shift-c writes a pull request comment",
     "shift-r submits comment, approve, or request changes",
+    "shift-m merges an approved pull request",
     "picker: up/down moves, enter confirms",
     "space sets a commit range base",
     "drag selects text and copies it",
     "esc or q closes",
 ];
 
+pub fn render_loading(frame: &mut Frame, area: Rect, message: &str) {
+    let popup_w = (width(message) as u16 + 4).clamp(1, area.width.max(1));
+    let height = 3.min(area.height).max(1);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(popup_w) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width: popup_w.min(area.width),
+        height,
+    };
+    frame.render_widget(Clear, popup);
+    let block = Block::bordered()
+        .border_style(style(ACCENT, PANEL))
+        .style(style(FG, PANEL))
+        .title(Line::from("working").style(style(ACCENT, PANEL)));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    if inner.is_empty() {
+        return;
+    }
+    draw(
+        frame,
+        inner.x + 1,
+        inner.y,
+        message,
+        inner.width.saturating_sub(1) as usize,
+        style(ACCENT, PANEL),
+    );
+}
+
 pub fn render(frame: &mut Frame, area: Rect, view: &ViewState) {
     if view.overlay == Overlay::None {
         return;
     }
-    let popup = if view.overlay == Overlay::Review {
-        review_popup(area)
-    } else {
-        centered(area, 80, 70)
+    let popup = match view.overlay {
+        Overlay::Review => review_popup(area),
+        Overlay::Merge => merge_popup(area),
+        _ => centered(area, 80, 70),
     };
     frame.render_widget(Clear, popup);
     let title = overlay_title(view);
@@ -46,6 +76,16 @@ pub fn render(frame: &mut Frame, area: Rect, view: &ViewState) {
         .border_style(style(BORDER, PANEL))
         .style(style(FG, PANEL))
         .title(Line::from(title).style(style(ACCENT, PANEL).add_modifier(Modifier::BOLD)));
+    if view.overlay == Overlay::Merge {
+        let hint = if view.loading.is_some() {
+            "merging…"
+        } else if view.merge.as_ref().is_some_and(|merge| merge.can_merge()) {
+            "enter merges  esc cancels"
+        } else {
+            "esc closes"
+        };
+        block = block.title_bottom(Line::from(hint).style(style(GRAY, PANEL)));
+    }
     if view.overlay == Overlay::Review {
         block =
             block.title_bottom(Line::from("enter submits  esc cancels").style(style(GRAY, PANEL)));
@@ -64,6 +104,7 @@ pub fn render(frame: &mut Frame, area: Rect, view: &ViewState) {
         Overlay::PullRequests => render_prs(frame, inner, view),
         Overlay::Help => render_help(frame, inner),
         Overlay::Review => render_review(frame, inner, view),
+        Overlay::Merge => render_merge(frame, inner, view),
         Overlay::None => {}
     }
 }
@@ -78,7 +119,74 @@ fn overlay_title(view: &ViewState) -> String {
             Some(number) => format!("review #{number}"),
             None => "review".to_string(),
         },
+        Overlay::Merge => match view.target.pr_number() {
+            Some(number) => format!("merge #{number}"),
+            None => "merge".to_string(),
+        },
         Overlay::None => String::new(),
+    }
+}
+
+fn merge_popup(area: Rect) -> Rect {
+    let width = 56.min(area.width);
+    let height = 12.min(area.height);
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
+fn render_merge(frame: &mut Frame, area: Rect, view: &ViewState) {
+    let Some(merge) = &view.merge else {
+        empty(frame, area, "no merge check");
+        return;
+    };
+    if area.width < 2 || area.height == 0 {
+        return;
+    }
+    let x = area.x + 1;
+    let row_w = area.width.saturating_sub(2) as usize;
+    let rows = [
+        ("CI", merge.ci_label.as_str(), merge.ci_ok),
+        ("merge", merge.merge_label.as_str(), merge.merge_ok),
+        (
+            "method",
+            merge.method.map(|method| method.label()).unwrap_or("none"),
+            merge.method.is_some(),
+        ),
+    ];
+    for (index, (label, value, ok)) in rows.iter().enumerate() {
+        let y = area.y + index as u16;
+        if y >= area.bottom() {
+            return;
+        }
+        draw(frame, x, y, label, 8, style(GRAY, PANEL));
+        let color = if *ok { GREEN } else { RED };
+        draw(
+            frame,
+            x + 8,
+            y,
+            value,
+            row_w.saturating_sub(8),
+            style(color, PANEL),
+        );
+    }
+    for (index, problem) in merge.problems.iter().enumerate() {
+        let y = area.y + 4 + index as u16;
+        if y >= area.bottom() {
+            return;
+        }
+        let shown = truncate(problem, row_w.saturating_sub(2));
+        draw(
+            frame,
+            x + 2,
+            y,
+            &shown,
+            row_w.saturating_sub(2),
+            style(YELLOW, PANEL),
+        );
     }
 }
 

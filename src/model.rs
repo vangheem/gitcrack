@@ -267,6 +267,136 @@ impl ReviewKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckResult {
+    Pass,
+    Fail,
+    Pending,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeMethod {
+    Squash,
+    Merge,
+    Rebase,
+}
+
+impl MergeMethod {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Squash => "squash",
+            Self::Merge => "merge",
+            Self::Rebase => "rebase",
+        }
+    }
+
+    pub fn flag(self) -> &'static str {
+        match self {
+            Self::Squash => "--squash",
+            Self::Merge => "--merge",
+            Self::Rebase => "--rebase",
+        }
+    }
+
+    pub fn pick(squash: bool, merge: bool, rebase: bool) -> Option<Self> {
+        if squash {
+            Some(Self::Squash)
+        } else if merge {
+            Some(Self::Merge)
+        } else if rebase {
+            Some(Self::Rebase)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeReadiness {
+    pub ci_ok: bool,
+    pub ci_label: String,
+    pub merge_ok: bool,
+    pub merge_label: String,
+    pub method: Option<MergeMethod>,
+    pub problems: Vec<String>,
+}
+
+impl MergeReadiness {
+    pub fn can_merge(&self) -> bool {
+        self.ci_ok && self.merge_ok && self.method.is_some()
+    }
+
+    pub fn assess(
+        mergeable: &str,
+        merge_state: &str,
+        draft: bool,
+        checks: &[(String, CheckResult)],
+        method: Option<MergeMethod>,
+    ) -> Self {
+        let failing: Vec<_> = checks
+            .iter()
+            .filter(|(_, result)| *result == CheckResult::Fail)
+            .map(|(name, _)| format!("{name} failing"))
+            .collect();
+        let pending: Vec<_> = checks
+            .iter()
+            .filter(|(_, result)| *result == CheckResult::Pending)
+            .map(|(name, _)| format!("{name} pending"))
+            .collect();
+        let ci_ok = failing.is_empty() && pending.is_empty();
+        let ci_label = if checks.is_empty() {
+            "no checks".to_string()
+        } else if !failing.is_empty() {
+            format!("failing ({})", failing.len())
+        } else if !pending.is_empty() {
+            format!("pending ({})", pending.len())
+        } else {
+            "passing".to_string()
+        };
+        let merge_label = merge_block(mergeable, merge_state, draft, method)
+            .unwrap_or_else(|| "allowed".to_string());
+        let merge_ok = merge_label == "allowed";
+        let mut problems = failing;
+        problems.extend(pending);
+        problems.truncate(6);
+        Self {
+            ci_ok,
+            ci_label,
+            merge_ok,
+            merge_label,
+            method,
+            problems,
+        }
+    }
+}
+
+fn merge_block(
+    mergeable: &str,
+    merge_state: &str,
+    draft: bool,
+    method: Option<MergeMethod>,
+) -> Option<String> {
+    if draft || merge_state == "DRAFT" {
+        return Some("draft".to_string());
+    }
+    if mergeable == "CONFLICTING" || merge_state == "DIRTY" {
+        return Some("conflicts".to_string());
+    }
+    if merge_state == "BEHIND" {
+        return Some("behind base".to_string());
+    }
+    if merge_state == "BLOCKED" {
+        return Some("blocked".to_string());
+    }
+    if merge_state == "UNKNOWN" || mergeable == "UNKNOWN" {
+        return Some("unknown".to_string());
+    }
+    if method.is_none() {
+        return Some("no merge method".to_string());
+    }
+    None
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
     None,
     Commits,
@@ -274,6 +404,7 @@ pub enum Overlay {
     PullRequests,
     Help,
     Review,
+    Merge,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -293,6 +424,9 @@ pub struct ViewState {
     pub comment: String,
     pub comment_cursor: usize,
     pub comment_focused: bool,
+    pub pr_review: Option<ReviewState>,
+    pub merge: Option<MergeReadiness>,
+    pub loading: Option<String>,
 }
 
 impl ViewState {
@@ -313,6 +447,9 @@ impl ViewState {
             comment: String::new(),
             comment_cursor: 0,
             comment_focused: false,
+            pr_review: None,
+            merge: None,
+            loading: None,
         }
     }
 
@@ -453,6 +590,7 @@ impl ViewState {
             Overlay::Branches => self.branches.len(),
             Overlay::PullRequests => self.prs.len(),
             Overlay::Review => ReviewKind::CHOICES.len(),
+            Overlay::Merge => 0,
         }
     }
 
@@ -530,5 +668,37 @@ mod tests {
             ReviewState::from_reviews("", ["CHANGES_REQUESTED"]),
             ReviewState::ChangesRequested
         );
+    }
+
+    #[test]
+    fn merge_requires_passing_ci_and_permission() {
+        use super::{CheckResult, MergeMethod, MergeReadiness};
+        let passing = MergeReadiness::assess(
+            "MERGEABLE",
+            "CLEAN",
+            false,
+            &[("ci".to_string(), CheckResult::Pass)],
+            Some(MergeMethod::Squash),
+        );
+        assert!(passing.can_merge());
+        let failing = MergeReadiness::assess(
+            "MERGEABLE",
+            "UNSTABLE",
+            false,
+            &[("ci".to_string(), CheckResult::Fail)],
+            Some(MergeMethod::Squash),
+        );
+        assert!(!failing.can_merge());
+        assert!(!failing.ci_ok);
+        assert!(failing.merge_ok);
+        let blocked = MergeReadiness::assess(
+            "MERGEABLE",
+            "BLOCKED",
+            false,
+            &[("ci".to_string(), CheckResult::Pass)],
+            Some(MergeMethod::Squash),
+        );
+        assert!(!blocked.can_merge());
+        assert_eq!(blocked.merge_label, "blocked");
     }
 }

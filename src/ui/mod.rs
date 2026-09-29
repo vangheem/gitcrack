@@ -43,6 +43,9 @@ pub fn render(frame: &mut Frame, view: &ViewState) {
     if view.overlay != Overlay::None {
         overlay::render(frame, area, view);
     }
+    if let Some(message) = &view.loading {
+        overlay::render_loading(frame, area, message);
+    }
 }
 
 fn render_too_small(frame: &mut Frame, area: Rect) {

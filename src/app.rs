@@ -14,7 +14,9 @@ use crate::clipboard;
 use crate::gh;
 use crate::git;
 use crate::input::{self, Action};
-use crate::model::{FileDiff, Overlay, RepoContext, ReviewTarget, ViewState};
+use crate::model::{
+    FileDiff, Overlay, RepoContext, ReviewKind, ReviewState, ReviewTarget, ViewState,
+};
 use crate::select::{Screen, Selection};
 use crate::ui;
 
@@ -64,7 +66,12 @@ fn run_loop(view: &mut ViewState) -> Result<()> {
                 if action == Action::Quit {
                     break;
                 }
+                if let Some(message) = loading_for(view, action) {
+                    view.loading = Some(message.to_string());
+                    terminal.draw(|frame| ui::render(frame, view))?;
+                }
                 apply_action(view, action, page_size(&terminal, view));
+                view.loading = None;
             }
             Event::Mouse(mouse) => {
                 apply_mouse(view, mouse, &screen, &mut selection, &mut dragging);
@@ -187,6 +194,19 @@ fn finish_selection(
     *selection = Some(sel);
 }
 
+fn loading_for(view: &ViewState, action: Action) -> Option<&'static str> {
+    match action {
+        Action::OpenMerge if view.is_pull_request() => Some("checking merge…"),
+        Action::Confirm
+            if view.overlay == Overlay::Merge
+                && view.merge.as_ref().is_some_and(|merge| merge.can_merge()) =>
+        {
+            Some("merging…")
+        }
+        _ => None,
+    }
+}
+
 fn apply_action(view: &mut ViewState, action: Action, page: usize) {
     let half = (page / 2).max(1);
     match action {
@@ -214,6 +234,7 @@ fn apply_action(view: &mut ViewState, action: Action, page: usize) {
         Action::MarkBase => mark_base(view),
         Action::FocusComment => focus_comment(view),
         Action::OpenReview => open_review(view),
+        Action::OpenMerge => open_merge(view),
         Action::BlurComment => view.comment_focused = false,
         Action::InsertChar(ch) => view.insert_comment(ch),
         Action::CommentBackspace => view.comment_backspace(),
@@ -269,6 +290,7 @@ fn confirm(view: &mut ViewState) {
         Overlay::Branches => confirm_branch(view),
         Overlay::PullRequests => confirm_pull_request(view),
         Overlay::Review => submit_review(view),
+        Overlay::Merge => confirm_merge(view),
         Overlay::Help | Overlay::None => {}
     }
 }
@@ -322,6 +344,7 @@ fn confirm_pull_request(view: &mut ViewState) {
     match load(&view.repo, &target) {
         Ok(files) => {
             replace_target(view, target);
+            view.pr_review = Some(pr.review);
             view.set_files(files);
             view.status = pr.url;
             view.close_overlay();
@@ -376,6 +399,11 @@ fn submit_review(view: &mut ViewState) {
     }
     match gh::review_pr(&view.repo, number, kind, &body) {
         Ok(()) => {
+            if kind == ReviewKind::Approve {
+                view.pr_review = Some(ReviewState::Approved);
+            } else if kind == ReviewKind::RequestChanges {
+                view.pr_review = Some(ReviewState::ChangesRequested);
+            }
             view.clear_comment();
             view.close_overlay();
             view.status = kind.submitted().to_string();
@@ -384,9 +412,57 @@ fn submit_review(view: &mut ViewState) {
     }
 }
 
+fn open_merge(view: &mut ViewState) {
+    let Some(number) = view.target.pr_number() else {
+        view.status = "error: open a pull request to merge".to_string();
+        return;
+    };
+    match gh::merge_readiness(&view.repo, number) {
+        Ok(readiness) => {
+            view.pr_review = Some(ReviewState::Approved);
+            view.merge = Some(readiness);
+            view.open_overlay(Overlay::Merge);
+        }
+        Err(err) => view.status = error_status(err),
+    }
+}
+
+fn confirm_merge(view: &mut ViewState) {
+    let Some(readiness) = view.merge.clone() else {
+        return;
+    };
+    if !readiness.ci_ok {
+        view.status = "error: ci is not passing".to_string();
+        return;
+    }
+    if !readiness.merge_ok {
+        view.status = format!("error: merge {}", readiness.merge_label);
+        return;
+    }
+    let Some(method) = readiness.method else {
+        view.status = "error: no merge method".to_string();
+        return;
+    };
+    let Some(number) = view.target.pr_number() else {
+        return;
+    };
+    match gh::merge_pr(&view.repo, number, method) {
+        Ok(()) => {
+            view.merge = None;
+            view.close_overlay();
+            replace_target(view, ReviewTarget::WorkingTree);
+            reload(view);
+            view.status = "merged".to_string();
+        }
+        Err(err) => view.status = error_status(err),
+    }
+}
+
 fn replace_target(view: &mut ViewState, target: ReviewTarget) {
     if view.target.pr_number() != target.pr_number() {
         view.clear_comment();
+        view.pr_review = None;
+        view.merge = None;
     }
     view.target = target;
 }

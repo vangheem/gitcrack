@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 
-use crate::model::ViewState;
+use crate::model::{ReviewState, ViewState};
 
 use super::text::{draw, fill, style, truncate, width};
 use super::theme::{FG, GRAY, PANEL, RED};
@@ -28,7 +28,7 @@ pub fn render(frame: &mut Frame, area: Rect, view: &ViewState) {
     }
     let usable = (area.width - 2) as usize;
     let hints = hint_list(view);
-    let status = view.status.as_str();
+    let status = view.loading.as_deref().unwrap_or(view.status.as_str());
     let status_fg = if status.starts_with("error:") {
         RED
     } else {
@@ -63,10 +63,17 @@ pub fn render(frame: &mut Frame, area: Rect, view: &ViewState) {
 
 fn hint_list(view: &ViewState) -> Vec<&str> {
     if view.comment_focused {
-        return vec!["esc done", "enter newline", "shift-r review"];
+        let mut hints = vec!["esc done", "enter newline", "shift-r review"];
+        if view.pr_review == Some(ReviewState::Approved) {
+            hints.push("shift-m merge");
+        }
+        return hints;
     }
     let mut hints = Vec::new();
     if view.is_pull_request() {
+        if view.pr_review == Some(ReviewState::Approved) {
+            hints.push("shift-m merge");
+        }
         hints.extend(["shift-c comment", "shift-r review"]);
     }
     hints.extend(HINTS);

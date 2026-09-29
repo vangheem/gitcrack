@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use unicode_width::UnicodeWidthChar;
 
-use crate::model::ViewState;
+use crate::model::{ReviewState, ViewState};
 
 use super::text::{draw, fill, style, truncate, width};
 use super::theme::{ACCENT, FG, GRAY, PANEL};
@@ -31,7 +31,13 @@ pub fn render(frame: &mut Frame, area: Rect, view: &ViewState) {
         );
         return;
     }
-    let hint = if view.comment_focused { "" } else { "shift-r" };
+    let hint = if view.comment_focused {
+        ""
+    } else if view.pr_review == Some(ReviewState::Approved) {
+        "shift-m"
+    } else {
+        "shift-r"
+    };
     let hint_w = width(hint);
     let reserve = if !hint.is_empty() && text_w > hint_w + 4 {
         hint_w + 2

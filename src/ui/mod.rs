@@ -1,3 +1,4 @@
+mod comment;
 mod diff;
 mod files;
 mod footer;
@@ -23,9 +24,11 @@ pub fn render(frame: &mut Frame, view: &ViewState) {
         render_too_small(frame, area);
         return;
     }
-    let [header_area, body, footer_area] = Layout::vertical([
+    let comment_h = view.comment_rows();
+    let [header_area, body, comment_area, footer_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Fill(1),
+        Constraint::Length(comment_h),
         Constraint::Length(1),
     ])
     .areas(area);
@@ -35,6 +38,7 @@ pub fn render(frame: &mut Frame, view: &ViewState) {
         Layout::horizontal([Constraint::Length(file_w), Constraint::Fill(1)]).areas(body);
     files::render(frame, file_area, view);
     diff::render(frame, diff_area, view);
+    comment::render(frame, comment_area, view);
     footer::render(frame, footer_area, view);
     if view.overlay != Overlay::None {
         overlay::render(frame, area, view);

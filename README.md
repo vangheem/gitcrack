@@ -37,9 +37,11 @@ The left pane is the file list. The right pane is the diff for the selected file
 | p | list open pull requests via `gh` |
 | w | back to the working tree |
 | r | refresh |
+| shift-c | on a pull request, focus the review comment |
+| shift-r | submit that comment as a comment, approval, or change request |
 | ? | help |
 | q or ctrl-c | quit |
 
 In a picker, up/down moves and enter opens the selection. Esc or q closes the picker. In the commit picker, space sets a range base; enter on another commit diffs that range.
 
-The mouse wheel scrolls the diff. Drag to select text; the selection is copied to the clipboard. gitcrack does not commit, checkout, or otherwise change the repo.
+The mouse wheel scrolls the diff. Drag to select text; the selection is copied to the clipboard. gitcrack does not commit, checkout, or otherwise change the local repo. On a pull request, shift-c writes a review comment and shift-r submits it through `gh`.

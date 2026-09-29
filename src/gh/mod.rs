@@ -4,7 +4,7 @@ use std::process::{Command, Output, Stdio};
 use anyhow::Result;
 use serde::Deserialize;
 
-use crate::model::{PullRequest, RepoContext};
+use crate::model::{PullRequest, RepoContext, ReviewKind, ReviewState};
 
 pub fn list_prs(repo: &RepoContext) -> Result<Vec<PullRequest>> {
     let output = gh(
@@ -17,7 +17,7 @@ pub fn list_prs(repo: &RepoContext) -> Result<Vec<PullRequest>> {
             "--limit",
             "100",
             "--json",
-            "number,title,author,baseRefName,headRefName,url,isDraft",
+            "number,title,author,baseRefName,headRefName,url,isDraft,reviewDecision,latestReviews",
         ],
     )?;
     let items: Vec<GhPullRequest> = serde_json::from_slice(&output.stdout)
@@ -31,16 +31,53 @@ pub fn pr_diff(repo: &RepoContext, number: u64) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+pub fn review_pr(repo: &RepoContext, number: u64, kind: ReviewKind, body: &str) -> Result<()> {
+    let number = number.to_string();
+    let mut args = vec!["pr", "review", number.as_str(), kind.flag()];
+    if !body.is_empty() {
+        args.push("--body-file");
+        args.push("-");
+    }
+    gh_stdin(repo, &args, (!body.is_empty()).then_some(body))?;
+    Ok(())
+}
+
 fn gh(repo: &RepoContext, args: &[&str]) -> Result<Output> {
-    let output = Command::new("gh")
+    gh_stdin(repo, args, None)
+}
+
+fn gh_stdin(repo: &RepoContext, args: &[&str], body: Option<&str>) -> Result<Output> {
+    let mut command = Command::new("gh");
+    command
         .args(args)
         .current_dir(&repo.root)
         .env("GH_FORCE_TTY", "0")
+        .env("GH_PROMPT_DISABLED", "1")
         .env("NO_COLOR", "1")
         .env("GIT_PAGER", "cat")
-        .stdin(Stdio::null())
-        .output()
-        .map_err(spawn_error)?;
+        .env("GH_EDITOR", ":")
+        .env("GIT_EDITOR", ":")
+        .env("EDITOR", ":")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if body.is_some() {
+        command.stdin(Stdio::piped());
+    } else {
+        command.stdin(Stdio::null());
+    }
+    let mut child = command.spawn().map_err(spawn_error)?;
+    let write_result = if let Some(body) = body {
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            stdin.write_all(body.as_bytes())
+        } else {
+            Ok(())
+        }
+    } else {
+        Ok(())
+    };
+    let output = child.wait_with_output().map_err(anyhow::Error::from)?;
+    write_result.map_err(|err| anyhow::anyhow!("failed to write review body: {err}"))?;
     if output.status.success() {
         Ok(output)
     } else {
@@ -74,6 +111,16 @@ struct GhPullRequest {
     url: String,
     #[serde(rename = "isDraft", default)]
     is_draft: bool,
+    #[serde(rename = "reviewDecision", default)]
+    review_decision: String,
+    #[serde(rename = "latestReviews", default)]
+    latest_reviews: Vec<GhReview>,
+}
+
+#[derive(Deserialize)]
+struct GhReview {
+    #[serde(default)]
+    state: String,
 }
 
 #[derive(Deserialize)]
@@ -94,6 +141,12 @@ impl From<GhPullRequest> for PullRequest {
             head_ref: item.head_ref,
             url: item.url,
             is_draft: item.is_draft,
+            review: ReviewState::from_reviews(
+                &item.review_decision,
+                item.latest_reviews
+                    .iter()
+                    .map(|review| review.state.as_str()),
+            ),
         }
     }
 }

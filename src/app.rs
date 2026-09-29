@@ -60,11 +60,11 @@ fn run_loop(view: &mut ViewState) -> Result<()> {
             Event::Key(key) => {
                 selection = None;
                 dragging = false;
-                let action = input::action_for(key, view.overlay);
+                let action = input::action_for(key, view.overlay, view.comment_focused);
                 if action == Action::Quit {
                     break;
                 }
-                apply_action(view, action, page_size(&terminal));
+                apply_action(view, action, page_size(&terminal, view));
             }
             Event::Mouse(mouse) => {
                 apply_mouse(view, mouse, &screen, &mut selection, &mut dragging);
@@ -112,9 +112,10 @@ fn poll_event() -> Result<Option<Event>> {
     }
 }
 
-fn page_size(terminal: &ratatui::DefaultTerminal) -> usize {
+fn page_size(terminal: &ratatui::DefaultTerminal, view: &ViewState) -> usize {
     let rows = terminal.size().map(|size| size.height).unwrap_or(0);
-    usize::from(rows).saturating_sub(3).max(1)
+    let chrome = 3 + usize::from(view.comment_rows());
+    usize::from(rows).saturating_sub(chrome).max(1)
 }
 
 fn apply_mouse(
@@ -211,6 +212,15 @@ fn apply_action(view: &mut ViewState, action: Action, page: usize) {
         Action::Confirm => confirm(view),
         Action::Cancel => view.close_overlay(),
         Action::MarkBase => mark_base(view),
+        Action::FocusComment => focus_comment(view),
+        Action::OpenReview => open_review(view),
+        Action::BlurComment => view.comment_focused = false,
+        Action::InsertChar(ch) => view.insert_comment(ch),
+        Action::CommentBackspace => view.comment_backspace(),
+        Action::CommentDelete => view.comment_delete(),
+        Action::CommentLeft => view.comment_left(),
+        Action::CommentRight => view.comment_right(),
+        Action::CommentNewline => view.comment_newline(),
     }
 }
 
@@ -223,7 +233,7 @@ fn toggle_help(view: &mut ViewState) {
 }
 
 fn show_working_tree(view: &mut ViewState) {
-    view.target = ReviewTarget::WorkingTree;
+    replace_target(view, ReviewTarget::WorkingTree);
     view.pending_base = None;
     view.close_overlay();
     reload(view);
@@ -258,6 +268,7 @@ fn confirm(view: &mut ViewState) {
         Overlay::Commits => confirm_commit(view),
         Overlay::Branches => confirm_branch(view),
         Overlay::PullRequests => confirm_pull_request(view),
+        Overlay::Review => submit_review(view),
         Overlay::Help | Overlay::None => {}
     }
 }
@@ -274,7 +285,7 @@ fn confirm_commit(view: &mut ViewState) {
         _ => ReviewTarget::Commit { rev: selected.sha },
     };
     view.pending_base = None;
-    view.target = target;
+    replace_target(view, target);
     view.close_overlay();
     reload(view);
 }
@@ -287,10 +298,13 @@ fn confirm_branch(view: &mut ViewState) {
         view.status = format!("error: {} is the default branch", branch.name);
         return;
     }
-    view.target = ReviewTarget::Range {
-        base: view.repo.default_branch.clone(),
-        head: branch.name,
-    };
+    replace_target(
+        view,
+        ReviewTarget::Range {
+            base: view.repo.default_branch.clone(),
+            head: branch.name,
+        },
+    );
     view.close_overlay();
     reload(view);
 }
@@ -307,7 +321,7 @@ fn confirm_pull_request(view: &mut ViewState) {
     };
     match load(&view.repo, &target) {
         Ok(files) => {
-            view.target = target;
+            replace_target(view, target);
             view.set_files(files);
             view.status = pr.url;
             view.close_overlay();
@@ -330,6 +344,51 @@ fn mark_base(view: &mut ViewState) {
         view.status = format!("base {} — enter a head commit", commit.short_sha);
         view.pending_base = Some(commit.sha);
     }
+}
+
+fn focus_comment(view: &mut ViewState) {
+    if !view.is_pull_request() {
+        view.status = "error: open a pull request to comment".to_string();
+        return;
+    }
+    view.comment_focused = true;
+    view.comment_cursor = view.comment_cursor.min(view.comment.len());
+}
+
+fn open_review(view: &mut ViewState) {
+    if view.target.pr_number().is_none() {
+        view.status = "error: open a pull request to review".to_string();
+        return;
+    }
+    view.open_overlay(Overlay::Review);
+}
+
+fn submit_review(view: &mut ViewState) {
+    let Some(number) = view.target.pr_number() else {
+        view.status = "error: open a pull request to review".to_string();
+        return;
+    };
+    let kind = view.review_choice();
+    let body = view.comment.trim().to_string();
+    if body.is_empty() && kind.needs_body() {
+        view.status = "error: a comment is required".to_string();
+        return;
+    }
+    match gh::review_pr(&view.repo, number, kind, &body) {
+        Ok(()) => {
+            view.clear_comment();
+            view.close_overlay();
+            view.status = kind.submitted().to_string();
+        }
+        Err(err) => view.status = error_status(err),
+    }
+}
+
+fn replace_target(view: &mut ViewState, target: ReviewTarget) {
+    if view.target.pr_number() != target.pr_number() {
+        view.clear_comment();
+    }
+    view.target = target;
 }
 
 fn reload(view: &mut ViewState) {

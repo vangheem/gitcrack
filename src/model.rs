@@ -44,6 +44,13 @@ pub enum ReviewTarget {
 }
 
 impl ReviewTarget {
+    pub fn pr_number(&self) -> Option<u64> {
+        match self {
+            Self::PullRequest { number, .. } => Some(*number),
+            _ => None,
+        }
+    }
+
     pub fn label(&self) -> String {
         match self {
             Self::WorkingTree => "working tree".to_string(),
@@ -176,6 +183,87 @@ pub struct PullRequest {
     pub head_ref: String,
     pub url: String,
     pub is_draft: bool,
+    pub review: ReviewState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewState {
+    Approved,
+    ChangesRequested,
+    Reviewed,
+    Unreviewed,
+}
+
+impl ReviewState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::ChangesRequested => "changes",
+            Self::Reviewed => "reviewed",
+            Self::Unreviewed => "unreviewed",
+        }
+    }
+
+    pub fn from_reviews<'a>(decision: &str, states: impl IntoIterator<Item = &'a str>) -> Self {
+        match decision {
+            "APPROVED" => return Self::Approved,
+            "CHANGES_REQUESTED" => return Self::ChangesRequested,
+            _ => {}
+        }
+        let mut commented = false;
+        for state in states {
+            match state {
+                "APPROVED" => return Self::Approved,
+                "CHANGES_REQUESTED" => return Self::ChangesRequested,
+                "COMMENTED" => commented = true,
+                _ => {}
+            }
+        }
+        if commented {
+            Self::Reviewed
+        } else {
+            Self::Unreviewed
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewKind {
+    Comment,
+    Approve,
+    RequestChanges,
+}
+
+impl ReviewKind {
+    pub const CHOICES: [Self; 3] = [Self::Comment, Self::Approve, Self::RequestChanges];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Comment => "comment",
+            Self::Approve => "approve",
+            Self::RequestChanges => "request changes",
+        }
+    }
+
+    pub fn flag(self) -> &'static str {
+        match self {
+            Self::Comment => "--comment",
+            Self::Approve => "--approve",
+            Self::RequestChanges => "--request-changes",
+        }
+    }
+
+    pub fn needs_body(self) -> bool {
+        !matches!(self, Self::Approve)
+    }
+
+    pub fn submitted(self) -> &'static str {
+        match self {
+            Self::Comment => "commented",
+            Self::Approve => "approved",
+            Self::RequestChanges => "changes requested",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,6 +273,7 @@ pub enum Overlay {
     Branches,
     PullRequests,
     Help,
+    Review,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -201,6 +290,9 @@ pub struct ViewState {
     pub prs: Vec<PullRequest>,
     pub status: String,
     pub pending_base: Option<String>,
+    pub comment: String,
+    pub comment_cursor: usize,
+    pub comment_focused: bool,
 }
 
 impl ViewState {
@@ -218,7 +310,91 @@ impl ViewState {
             prs: Vec::new(),
             status: String::new(),
             pending_base: None,
+            comment: String::new(),
+            comment_cursor: 0,
+            comment_focused: false,
         }
+    }
+
+    pub fn is_pull_request(&self) -> bool {
+        self.target.pr_number().is_some()
+    }
+
+    pub fn comment_rows(&self) -> u16 {
+        if !self.is_pull_request() {
+            0
+        } else if self.comment_focused {
+            3
+        } else {
+            1
+        }
+    }
+
+    pub fn review_choice(&self) -> ReviewKind {
+        ReviewKind::CHOICES
+            .get(self.overlay_selected)
+            .copied()
+            .unwrap_or(ReviewKind::Comment)
+    }
+
+    pub fn insert_comment(&mut self, ch: char) {
+        let at = self.cursor_at();
+        self.comment.insert(at, ch);
+        self.comment_cursor = at + ch.len_utf8();
+    }
+
+    pub fn comment_backspace(&mut self) {
+        let at = self.cursor_at();
+        if at == 0 {
+            self.comment_cursor = 0;
+            return;
+        }
+        let prev = self.comment.floor_char_boundary(at - 1);
+        self.comment.replace_range(prev..at, "");
+        self.comment_cursor = prev;
+    }
+
+    pub fn comment_delete(&mut self) {
+        let at = self.cursor_at();
+        let Some(ch) = self.comment[at..].chars().next() else {
+            self.comment_cursor = at;
+            return;
+        };
+        self.comment.replace_range(at..at + ch.len_utf8(), "");
+        self.comment_cursor = at;
+    }
+
+    pub fn comment_left(&mut self) {
+        let at = self.cursor_at();
+        if at == 0 {
+            self.comment_cursor = 0;
+            return;
+        }
+        self.comment_cursor = self.comment.floor_char_boundary(at - 1);
+    }
+
+    pub fn comment_right(&mut self) {
+        let at = self.cursor_at();
+        let Some(ch) = self.comment[at..].chars().next() else {
+            self.comment_cursor = self.comment.len();
+            return;
+        };
+        self.comment_cursor = at + ch.len_utf8();
+    }
+
+    pub fn comment_newline(&mut self) {
+        self.insert_comment('\n');
+    }
+
+    pub fn clear_comment(&mut self) {
+        self.comment.clear();
+        self.comment_cursor = 0;
+        self.comment_focused = false;
+    }
+
+    fn cursor_at(&self) -> usize {
+        self.comment
+            .floor_char_boundary(self.comment_cursor.min(self.comment.len()))
     }
 
     pub fn selected_file(&self) -> Option<&FileDiff> {
@@ -276,6 +452,7 @@ impl ViewState {
             Overlay::Commits => self.commits.len(),
             Overlay::Branches => self.branches.len(),
             Overlay::PullRequests => self.prs.len(),
+            Overlay::Review => ReviewKind::CHOICES.len(),
         }
     }
 
@@ -300,5 +477,58 @@ impl ViewState {
     pub fn close_overlay(&mut self) {
         self.overlay = Overlay::None;
         self.overlay_selected = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{RepoContext, ViewState};
+
+    fn view() -> ViewState {
+        ViewState::new(RepoContext {
+            root: PathBuf::from("."),
+            branch: None,
+            head: "abc".to_string(),
+            default_branch: "main".to_string(),
+        })
+    }
+
+    #[test]
+    fn comment_editing_keeps_the_cursor_on_character_boundaries() {
+        let mut view = view();
+        view.insert_comment('a');
+        view.insert_comment('b');
+        view.comment_left();
+        view.comment_backspace();
+        assert_eq!(view.comment, "b");
+        view.comment_right();
+        view.comment_newline();
+        view.insert_comment('é');
+        view.comment_backspace();
+        assert_eq!(view.comment, "b\n");
+        assert_eq!(view.comment_cursor, view.comment.len());
+    }
+
+    #[test]
+    fn review_state_marks_unreviewed_until_a_review_exists() {
+        use super::ReviewState;
+        assert_eq!(
+            ReviewState::from_reviews("", std::iter::empty()),
+            ReviewState::Unreviewed
+        );
+        assert_eq!(
+            ReviewState::from_reviews("REVIEW_REQUIRED", ["COMMENTED"]),
+            ReviewState::Reviewed
+        );
+        assert_eq!(
+            ReviewState::from_reviews("APPROVED", ["COMMENTED"]),
+            ReviewState::Approved
+        );
+        assert_eq!(
+            ReviewState::from_reviews("", ["CHANGES_REQUESTED"]),
+            ReviewState::ChangesRequested
+        );
     }
 }

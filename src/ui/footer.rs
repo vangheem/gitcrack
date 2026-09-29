@@ -27,6 +27,7 @@ pub fn render(frame: &mut Frame, area: Rect, view: &ViewState) {
         return;
     }
     let usable = (area.width - 2) as usize;
+    let hints = hint_list(view);
     let status = view.status.as_str();
     let status_fg = if status.starts_with("error:") {
         RED
@@ -45,6 +46,7 @@ pub fn render(frame: &mut Frame, area: Rect, view: &ViewState) {
         area.x + 1,
         area.y,
         usable.saturating_sub(status_w + gap),
+        &hints,
     );
     if status_w > 0 {
         let x = area.right() - 1 - status_w as u16;
@@ -59,9 +61,21 @@ pub fn render(frame: &mut Frame, area: Rect, view: &ViewState) {
     }
 }
 
-fn draw_hints(frame: &mut Frame, mut x: u16, y: u16, max: usize) {
+fn hint_list(view: &ViewState) -> Vec<&str> {
+    if view.comment_focused {
+        return vec!["esc done", "enter newline", "shift-r review"];
+    }
+    let mut hints = Vec::new();
+    if view.is_pull_request() {
+        hints.extend(["shift-c comment", "shift-r review"]);
+    }
+    hints.extend(HINTS);
+    hints
+}
+
+fn draw_hints(frame: &mut Frame, mut x: u16, y: u16, max: usize, hints: &[&str]) {
     let mut used = 0;
-    for (i, hint) in HINTS.iter().enumerate() {
+    for (i, hint) in hints.iter().enumerate() {
         if i > 0 {
             if used + 3 > max {
                 break;

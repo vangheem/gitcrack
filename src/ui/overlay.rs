@@ -4,10 +4,10 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
-use crate::model::{Overlay, ViewState};
+use crate::model::{Overlay, ReviewKind, ReviewState, ViewState};
 
 use super::text::{self, centered, draw, fill, style, truncate, width, window_start};
-use super::theme::{ACCENT, BORDER, FG, GRAY, GREEN, PANEL, SELECTED, YELLOW};
+use super::theme::{ACCENT, BORDER, CYAN, FG, GRAY, GREEN, PANEL, SELECTED, YELLOW};
 
 const HELP: &[&str] = &[
     "up/down or tab/shift-tab changes file",
@@ -20,6 +20,8 @@ const HELP: &[&str] = &[
     "c, b, p open pickers",
     "w returns to the working tree",
     "r refreshes    q or ctrl-c quits",
+    "shift-c writes a pull request comment",
+    "shift-r submits comment, approve, or request changes",
     "picker: up/down moves, enter confirms",
     "space sets a commit range base",
     "drag selects text and copies it",
@@ -30,24 +32,29 @@ pub fn render(frame: &mut Frame, area: Rect, view: &ViewState) {
     if view.overlay == Overlay::None {
         return;
     }
-    let popup = centered(area, 80, 70);
-    frame.render_widget(Clear, popup);
-    let title = match view.overlay {
-        Overlay::Commits => "commits",
-        Overlay::Branches => "branches",
-        Overlay::PullRequests => "pull requests",
-        Overlay::Help => "help",
-        Overlay::None => return,
+    let popup = if view.overlay == Overlay::Review {
+        review_popup(area)
+    } else {
+        centered(area, 80, 70)
     };
+    frame.render_widget(Clear, popup);
+    let title = overlay_title(view);
+    if title.is_empty() {
+        return;
+    }
     let mut block = Block::bordered()
         .border_style(style(BORDER, PANEL))
         .style(style(FG, PANEL))
         .title(Line::from(title).style(style(ACCENT, PANEL).add_modifier(Modifier::BOLD)));
-    if view.overlay == Overlay::Commits {
-        if let Some(base) = &view.pending_base {
-            let footer = commit_footer(base, popup.width.saturating_sub(2) as usize);
-            block = block.title_bottom(Line::from(footer).style(style(GRAY, PANEL)));
-        }
+    if view.overlay == Overlay::Review {
+        block =
+            block.title_bottom(Line::from("enter submits  esc cancels").style(style(GRAY, PANEL)));
+    }
+    if view.overlay == Overlay::Commits
+        && let Some(base) = &view.pending_base
+    {
+        let footer = commit_footer(base, popup.width.saturating_sub(2) as usize);
+        block = block.title_bottom(Line::from(footer).style(style(GRAY, PANEL)));
     }
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
@@ -56,7 +63,101 @@ pub fn render(frame: &mut Frame, area: Rect, view: &ViewState) {
         Overlay::Branches => render_branches(frame, inner, view),
         Overlay::PullRequests => render_prs(frame, inner, view),
         Overlay::Help => render_help(frame, inner),
+        Overlay::Review => render_review(frame, inner, view),
         Overlay::None => {}
+    }
+}
+
+fn overlay_title(view: &ViewState) -> String {
+    match view.overlay {
+        Overlay::Commits => "commits".to_string(),
+        Overlay::Branches => "branches".to_string(),
+        Overlay::PullRequests => "pull requests".to_string(),
+        Overlay::Help => "help".to_string(),
+        Overlay::Review => match view.target.pr_number() {
+            Some(number) => format!("review #{number}"),
+            None => "review".to_string(),
+        },
+        Overlay::None => String::new(),
+    }
+}
+
+fn review_popup(area: Rect) -> Rect {
+    let width = 56.min(area.width);
+    let height = 7.min(area.height);
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
+fn render_review(frame: &mut Frame, area: Rect, view: &ViewState) {
+    render_picker(
+        frame,
+        area,
+        ReviewKind::CHOICES.len(),
+        view.overlay_selected,
+        |frame, x, y, w, index, bg| {
+            draw_review_choice(frame, x, y, w, view, index, bg);
+        },
+    );
+}
+
+fn draw_review_choice(
+    frame: &mut Frame,
+    x: u16,
+    y: u16,
+    row_w: usize,
+    view: &ViewState,
+    index: usize,
+    bg: ratatui::style::Color,
+) {
+    let Some(kind) = ReviewKind::CHOICES.get(index).copied() else {
+        return;
+    };
+    let label = kind.label();
+    let color = match kind {
+        ReviewKind::Comment => ACCENT,
+        ReviewKind::Approve => GREEN,
+        ReviewKind::RequestChanges => YELLOW,
+    };
+    draw(frame, x, y, label, row_w, style(color, bg));
+    let preview = comment_preview(&view.comment);
+    let label_w = width(label);
+    let gap = 2;
+    if row_w <= label_w + gap {
+        return;
+    }
+    let preview_w = row_w - label_w - gap;
+    let shown = truncate(&preview, preview_w);
+    let preview_color = if view.comment.trim().is_empty() {
+        GRAY
+    } else {
+        FG
+    };
+    draw(
+        frame,
+        x + (label_w + gap) as u16,
+        y,
+        &shown,
+        preview_w,
+        style(preview_color, bg),
+    );
+}
+
+fn comment_preview(comment: &str) -> String {
+    let trimmed = comment.trim();
+    if trimmed.is_empty() {
+        return "no comment".to_string();
+    }
+    let mut lines = trimmed.lines();
+    let first = lines.next().unwrap_or("");
+    if lines.next().is_some() {
+        format!("{first}…")
+    } else {
+        first.to_string()
     }
 }
 
@@ -324,6 +425,20 @@ fn draw_pr(
         );
         cursor += width(&shown);
     }
+    let status = pr.review.label();
+    let gap = usize::from(cursor > 0 && cursor < row_w);
+    if cursor + gap < row_w {
+        let shown = truncate(status, row_w - cursor - gap);
+        draw(
+            frame,
+            x + (cursor + gap) as u16,
+            y,
+            &shown,
+            row_w - cursor - gap,
+            style(review_color(pr.review), bg),
+        );
+        cursor += gap + width(&shown);
+    }
     let refs = format!("{} -> {}", pr.head_ref, pr.base_ref);
     let author = truncate(&pr.author, 16);
     let refs_shown = truncate(&refs, 28);
@@ -364,6 +479,15 @@ fn draw_pr(
             width(&refs_shown),
             style(GRAY, bg),
         );
+    }
+}
+
+fn review_color(state: ReviewState) -> ratatui::style::Color {
+    match state {
+        ReviewState::Approved => GREEN,
+        ReviewState::ChangesRequested => YELLOW,
+        ReviewState::Reviewed => CYAN,
+        ReviewState::Unreviewed => GRAY,
     }
 }
 

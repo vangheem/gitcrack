@@ -93,6 +93,16 @@ pub fn merge_readiness(repo: &RepoContext, number: u64) -> Result<MergeReadiness
     ))
 }
 
+pub fn set_draft(repo: &RepoContext, number: u64, draft: bool) -> Result<()> {
+    let number = number.to_string();
+    if draft {
+        gh(repo, &["pr", "ready", &number, "--undo"])?;
+    } else {
+        gh(repo, &["pr", "ready", &number])?;
+    }
+    Ok(())
+}
+
 pub fn merge_pr(repo: &RepoContext, number: u64, method: MergeMethod) -> Result<()> {
     let number = number.to_string();
     gh(repo, &["pr", "merge", &number, method.flag()])?;

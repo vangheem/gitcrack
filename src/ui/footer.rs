@@ -67,6 +67,9 @@ fn hint_list(view: &ViewState) -> Vec<&str> {
         if view.pr_review == Some(ReviewState::Approved) {
             hints.push("shift-m merge");
         }
+        if let Some(hint) = draft_hint(view) {
+            hints.push(hint);
+        }
         return hints;
     }
     let mut hints = Vec::new();
@@ -74,10 +77,21 @@ fn hint_list(view: &ViewState) -> Vec<&str> {
         if view.pr_review == Some(ReviewState::Approved) {
             hints.push("shift-m merge");
         }
+        if let Some(hint) = draft_hint(view) {
+            hints.push(hint);
+        }
         hints.extend(["shift-c comment", "shift-r review"]);
     }
     hints.extend(HINTS);
     hints
+}
+
+fn draft_hint(view: &ViewState) -> Option<&'static str> {
+    match view.pr_draft {
+        Some(true) => Some("shift-d ready"),
+        Some(false) => Some("shift-d draft"),
+        None => None,
+    }
 }
 
 fn draw_hints(frame: &mut Frame, mut x: u16, y: u16, max: usize, hints: &[&str]) {

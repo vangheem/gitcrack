@@ -1,12 +1,13 @@
 use std::io::{self, stdout};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyboardEnhancementFlags, MouseButton,
-    MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyboardEnhancementFlags, KeyCode, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 
@@ -40,26 +41,38 @@ fn run_loop(view: &mut ViewState) -> Result<()> {
         previous(info);
     }));
     let _guard = TerminalGuard;
-    execute!(stdout(), EnableMouseCapture)?;
+    execute!(stdout(), EnableMouseCapture, EnableBracketedPaste)?;
     let _ = execute!(stdout(), PushKeyboardEnhancementFlags(keyboard_flags()));
     let mut screen = Screen::default();
     let mut selection = None;
     let mut dragging = false;
+    let mut last_click: Option<Click> = None;
+    let mut mouse_down = false;
+    let mut key_burst = KeyBurst::default();
 
     loop {
         let shown = selection.filter(|sel: &Selection| !sel.is_empty());
         terminal.draw(|frame| {
-            ui::render(frame, view);
+            let sources = ui::render(frame, view);
             if let Some(sel) = shown {
                 ui::paint_selection(frame, sel);
             }
             screen = Screen::from_buffer(frame.buffer_mut());
+            screen.set_sources(sources);
         })?;
         let Some(event) = poll_event()? else {
             continue;
         };
         match event {
+            Event::Paste(_) => {}
             Event::Key(key) => {
+                if mouse_down || key_burst.absorb(&key) {
+                    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        break;
+                    }
+                    continue;
+                }
                 selection = None;
                 dragging = false;
                 let action = input::action_for(key, view.overlay, view.comment_focused);
@@ -68,18 +81,26 @@ fn run_loop(view: &mut ViewState) -> Result<()> {
                 }
                 if let Some(message) = loading_for(view, action) {
                     view.loading = Some(message.to_string());
-                    terminal.draw(|frame| ui::render(frame, view))?;
+                    terminal.draw(|frame| {
+                        ui::render(frame, view);
+                    })?;
                 }
                 apply_action(view, action, page_size(&terminal, view));
                 view.loading = None;
             }
             Event::Mouse(mouse) => {
+                match mouse.kind {
+                    MouseEventKind::Down(_) => mouse_down = true,
+                    MouseEventKind::Up(_) => mouse_down = false,
+                    _ => {}
+                }
                 apply_mouse(
                     view,
                     mouse,
                     &screen,
                     &mut selection,
                     &mut dragging,
+                    &mut last_click,
                     page_size(&terminal, view),
                 );
             }
@@ -101,7 +122,7 @@ fn cleanup_terminal() {
     if TERMINAL_CLEANED.swap(true, Ordering::SeqCst) {
         return;
     }
-    let _ = execute!(io::stdout(), DisableMouseCapture);
+    let _ = execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
     let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
     ratatui::restore();
 }
@@ -132,22 +153,77 @@ fn page_size(terminal: &ratatui::DefaultTerminal, view: &ViewState) -> usize {
     usize::from(rows).saturating_sub(chrome).max(1)
 }
 
+struct Click {
+    at: Instant,
+    pos: (u16, u16),
+    count: u8,
+}
+
+#[derive(Default)]
+struct KeyBurst {
+    recent: Vec<Instant>,
+    ignore_until: Option<Instant>,
+}
+
+impl KeyBurst {
+    fn absorb(&mut self, key: &crossterm::event::KeyEvent) -> bool {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            return false;
+        }
+        let KeyCode::Char(_) = key.code else {
+            return false;
+        };
+        let now = Instant::now();
+        if self.ignore_until.is_some_and(|until| now < until) {
+            self.ignore_until = Some(now + Duration::from_millis(200));
+            return true;
+        }
+        self.recent
+            .retain(|at| now.duration_since(*at) < Duration::from_millis(40));
+        self.recent.push(now);
+        if self.recent.len() >= 4 {
+            self.recent.clear();
+            self.ignore_until = Some(now + Duration::from_millis(200));
+            return true;
+        }
+        false
+    }
+}
+
 fn apply_mouse(
     view: &mut ViewState,
     mouse: MouseEvent,
     screen: &Screen,
     selection: &mut Option<Selection>,
     dragging: &mut bool,
+    last_click: &mut Option<Click>,
     viewport: usize,
 ) {
     let pos = screen.clamp(mouse.column, mouse.row);
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
-            *selection = Some(Selection {
-                anchor: pos,
-                head: pos,
-            });
-            *dragging = true;
+            let count = click_count(last_click, pos);
+            if count >= 2 {
+                let span = if count >= 3 {
+                    screen.line_span(pos.1)
+                } else {
+                    screen.word_span(pos.0, pos.1)
+                };
+                *dragging = false;
+                if let Some((anchor, head)) = span {
+                    let sel = Selection { anchor, head };
+                    copy_selection(view, screen, sel);
+                    *selection = Some(sel);
+                } else {
+                    *selection = None;
+                }
+            } else {
+                *selection = Some(Selection {
+                    anchor: pos,
+                    head: pos,
+                });
+                *dragging = true;
+            }
         }
         MouseEventKind::Drag(_) if *dragging => {
             if let Some(sel) = selection.as_mut() {
@@ -178,6 +254,36 @@ fn wheel(
     }
 }
 
+fn click_count(last_click: &mut Option<Click>, pos: (u16, u16)) -> u8 {
+    let now = Instant::now();
+    let count = match last_click {
+        Some(click)
+            if now.duration_since(click.at) <= Duration::from_millis(500) && click.pos == pos =>
+        {
+            click.count.saturating_add(1)
+        }
+        _ => 1,
+    };
+    *last_click = Some(Click {
+        at: now,
+        pos,
+        count,
+    });
+    count
+}
+
+fn copy_selection(view: &mut ViewState, screen: &Screen, sel: Selection) {
+    let text = screen.selected_text(sel);
+    if text.is_empty() {
+        return;
+    }
+    view.status = if clipboard::copy(&text) {
+        "copied".to_string()
+    } else {
+        "copy failed".to_string()
+    };
+}
+
 fn finish_selection(
     view: &mut ViewState,
     screen: &Screen,
@@ -191,16 +297,10 @@ fn finish_selection(
     if sel.is_empty() {
         return;
     }
-    let text = screen.selected_text(sel);
-    if text.is_empty() {
-        return;
+    copy_selection(view, screen, sel);
+    if !screen.selected_text(sel).is_empty() {
+        *selection = Some(sel);
     }
-    view.status = if clipboard::copy(&text) {
-        "copied".to_string()
-    } else {
-        "copy failed".to_string()
-    };
-    *selection = Some(sel);
 }
 
 fn loading_for(view: &ViewState, action: Action) -> Option<&'static str> {
@@ -221,6 +321,7 @@ fn gh_confirm(view: &ViewState) -> bool {
                 && (!view.review_choice().needs_body() || !view.comment.trim().is_empty())
         }
         Overlay::Merge => view.merge.as_ref().is_some_and(|merge| merge.can_merge()),
+        Overlay::Draft => view.pr_draft.is_some() && view.target.pr_number().is_some(),
         _ => false,
     }
 }
@@ -230,6 +331,7 @@ fn confirm_loading(view: &ViewState) -> Option<&'static str> {
         Overlay::PullRequests => Some("loading pull request…"),
         Overlay::Review => Some("submitting review…"),
         Overlay::Merge => Some("merging…"),
+        Overlay::Draft => Some("updating draft…"),
         _ => None,
     }
 }
@@ -262,6 +364,7 @@ fn apply_action(view: &mut ViewState, action: Action, page: usize) {
         Action::FocusComment => focus_comment(view),
         Action::OpenReview => open_review(view),
         Action::OpenMerge => open_merge(view),
+        Action::OpenDraft => open_draft(view),
         Action::BlurComment => view.comment_focused = false,
         Action::InsertChar(ch) => view.insert_comment(ch),
         Action::CommentBackspace => view.comment_backspace(),
@@ -318,6 +421,7 @@ fn confirm(view: &mut ViewState) {
         Overlay::PullRequests => confirm_pull_request(view),
         Overlay::Review => submit_review(view),
         Overlay::Merge => confirm_merge(view),
+        Overlay::Draft => confirm_draft(view),
         Overlay::Help | Overlay::None => {}
     }
 }
@@ -371,6 +475,7 @@ fn confirm_pull_request(view: &mut ViewState) {
     match load(&view.repo, &target) {
         Ok(files) => {
             replace_target(view, target);
+            view.pr_draft = Some(pr.is_draft);
             view.pr_review = Some(pr.review);
             view.set_files(files);
             view.status = pr.url;
@@ -439,6 +544,43 @@ fn submit_review(view: &mut ViewState) {
     }
 }
 
+fn open_draft(view: &mut ViewState) {
+    if view.target.pr_number().is_none() {
+        view.status = "error: open a pull request to change draft".to_string();
+        return;
+    }
+    if view.pr_draft.is_none() {
+        view.status = "error: draft state unknown".to_string();
+        return;
+    }
+    view.open_overlay(Overlay::Draft);
+}
+
+fn confirm_draft(view: &mut ViewState) {
+    let Some(number) = view.target.pr_number() else {
+        return;
+    };
+    let Some(draft) = view.pr_draft else {
+        return;
+    };
+    let make_draft = !draft;
+    match gh::set_draft(&view.repo, number, make_draft) {
+        Ok(()) => {
+            view.pr_draft = Some(make_draft);
+            if let Some(pr) = view.prs.iter_mut().find(|pr| pr.number == number) {
+                pr.is_draft = make_draft;
+            }
+            view.close_overlay();
+            view.status = if make_draft {
+                "converted to draft".to_string()
+            } else {
+                "marked ready".to_string()
+            };
+        }
+        Err(err) => view.status = error_status(err),
+    }
+}
+
 fn open_merge(view: &mut ViewState) {
     let Some(number) = view.target.pr_number() else {
         view.status = "error: open a pull request to merge".to_string();
@@ -489,6 +631,7 @@ fn replace_target(view: &mut ViewState, target: ReviewTarget) {
     if view.target.pr_number() != target.pr_number() {
         view.clear_comment();
         view.pr_review = None;
+        view.pr_draft = None;
         view.merge = None;
     }
     view.target = target;

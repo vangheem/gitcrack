@@ -30,6 +30,7 @@ pub enum Action {
     FocusComment,
     OpenReview,
     OpenMerge,
+    OpenDraft,
     BlurComment,
     InsertChar(char),
     CommentBackspace,
@@ -46,7 +47,7 @@ pub fn action_for(key: KeyEvent, overlay: Overlay, comment_focused: bool) -> Act
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return Action::Quit;
     }
-    if overlay == Overlay::Review || overlay == Overlay::Merge {
+    if overlay == Overlay::Review || overlay == Overlay::Merge || overlay == Overlay::Draft {
         return review_modal_action(key);
     }
     if overlay == Overlay::None && comment_focused {
@@ -78,6 +79,9 @@ fn review_action(key: KeyEvent) -> Action {
     }
     if shifted(&key, 'm') {
         return Action::OpenMerge;
+    }
+    if shifted(&key, 'd') {
+        return Action::OpenDraft;
     }
     match key.code {
         KeyCode::Up if shift => Action::ScrollUp,
@@ -115,6 +119,9 @@ fn comment_action(key: KeyEvent) -> Action {
     }
     if shifted(&key, 'm') {
         return Action::OpenMerge;
+    }
+    if shifted(&key, 'd') {
+        return Action::OpenDraft;
     }
     if shifted(&key, 'c') {
         return Action::None;
@@ -367,6 +374,14 @@ mod tests {
                 true
             ),
             Action::OpenMerge
+        );
+        assert_eq!(
+            action_for(
+                key(KeyCode::Char('D'), KeyModifiers::empty()),
+                Overlay::None,
+                false
+            ),
+            Action::OpenDraft
         );
     }
 

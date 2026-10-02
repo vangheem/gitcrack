@@ -12,17 +12,18 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::{Fill, Paragraph};
 
 use crate::model::{Overlay, ViewState};
+use crate::select::SourceSpan;
 
 use self::text::style;
 use self::theme::{FG, GRAY, PANEL};
 
 pub use self::text::paint_selection;
 
-pub fn render(frame: &mut Frame, view: &ViewState) {
+pub fn render(frame: &mut Frame, view: &ViewState) -> Vec<SourceSpan> {
     let area = frame.area();
     if area.height < 20 || area.width < 50 {
         render_too_small(frame, area);
-        return;
+        return Vec::new();
     }
     let comment_h = view.comment_rows();
     let [header_area, body, comment_area, footer_area] = Layout::vertical([
@@ -37,7 +38,7 @@ pub fn render(frame: &mut Frame, view: &ViewState) {
     let [file_area, diff_area] =
         Layout::horizontal([Constraint::Length(file_w), Constraint::Fill(1)]).areas(body);
     files::render(frame, file_area, view);
-    diff::render(frame, diff_area, view);
+    let sources = diff::render(frame, diff_area, view);
     comment::render(frame, comment_area, view);
     footer::render(frame, footer_area, view);
     if view.overlay != Overlay::None {
@@ -46,6 +47,7 @@ pub fn render(frame: &mut Frame, view: &ViewState) {
     if let Some(message) = &view.loading {
         overlay::render_loading(frame, area, message);
     }
+    sources
 }
 
 fn render_too_small(frame: &mut Frame, area: Rect) {

@@ -23,9 +23,10 @@ const HELP: &[&str] = &[
     "shift-c writes a pull request comment",
     "shift-r submits comment, approve, or request changes",
     "shift-m merges an approved pull request",
+    "shift-d marks a pull request ready or draft",
     "picker: up/down moves, enter confirms",
     "space sets a commit range base",
-    "drag selects text and copies it",
+    "drag selects text; double-click selects a word",
     "esc or q closes",
 ];
 
@@ -63,7 +64,7 @@ pub fn render(frame: &mut Frame, area: Rect, view: &ViewState) {
         return;
     }
     let popup = match view.overlay {
-        Overlay::Review => review_popup(area),
+        Overlay::Review | Overlay::Draft => review_popup(area),
         Overlay::Merge => merge_popup(area),
         _ => centered(area, 80, 70),
     };
@@ -86,6 +87,11 @@ pub fn render(frame: &mut Frame, area: Rect, view: &ViewState) {
         };
         block = block.title_bottom(Line::from(hint).style(style(GRAY, PANEL)));
     }
+    if view.overlay == Overlay::Draft {
+        block = block.title_bottom(
+            Line::from("enter confirms  esc cancels").style(style(GRAY, PANEL)),
+        );
+    }
     if view.overlay == Overlay::Review {
         block =
             block.title_bottom(Line::from("enter submits  esc cancels").style(style(GRAY, PANEL)));
@@ -105,6 +111,7 @@ pub fn render(frame: &mut Frame, area: Rect, view: &ViewState) {
         Overlay::Help => render_help(frame, inner),
         Overlay::Review => render_review(frame, inner, view),
         Overlay::Merge => render_merge(frame, inner, view),
+        Overlay::Draft => render_draft(frame, inner, view),
         Overlay::None => {}
     }
 }
@@ -122,6 +129,10 @@ fn overlay_title(view: &ViewState) -> String {
         Overlay::Merge => match view.target.pr_number() {
             Some(number) => format!("merge #{number}"),
             None => "merge".to_string(),
+        },
+        Overlay::Draft => match view.target.pr_number() {
+            Some(number) => format!("draft #{number}"),
+            None => "draft".to_string(),
         },
         Overlay::None => String::new(),
     }
@@ -188,6 +199,46 @@ fn render_merge(frame: &mut Frame, area: Rect, view: &ViewState) {
             style(YELLOW, PANEL),
         );
     }
+}
+
+fn render_draft(frame: &mut Frame, area: Rect, view: &ViewState) {
+    let Some(draft) = view.pr_draft else {
+        empty(frame, area, "draft state unknown");
+        return;
+    };
+    if area.width < 2 || area.height == 0 {
+        return;
+    }
+    let x = area.x + 1;
+    let row_w = area.width.saturating_sub(2) as usize;
+    let now = if draft { "draft" } else { "ready" };
+    let action = if draft {
+        "mark ready for review"
+    } else {
+        "convert to draft"
+    };
+    let now_color = if draft { YELLOW } else { GREEN };
+    draw(frame, x, area.y, "now", 8, style(GRAY, PANEL));
+    draw(
+        frame,
+        x + 8,
+        area.y,
+        now,
+        row_w.saturating_sub(8),
+        style(now_color, PANEL),
+    );
+    if area.height < 2 {
+        return;
+    }
+    draw(frame, x, area.y + 1, "action", 8, style(GRAY, PANEL));
+    draw(
+        frame,
+        x + 8,
+        area.y + 1,
+        action,
+        row_w.saturating_sub(8),
+        style(ACCENT, PANEL),
+    );
 }
 
 fn review_popup(area: Rect) -> Rect {

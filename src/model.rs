@@ -416,6 +416,7 @@ pub enum Overlay {
     Help,
     Review,
     Merge,
+    Draft,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -435,6 +436,7 @@ pub struct ViewState {
     pub comment: String,
     pub comment_cursor: usize,
     pub comment_focused: bool,
+    pub pr_draft: Option<bool>,
     pub pr_review: Option<ReviewState>,
     pub merge: Option<MergeReadiness>,
     pub loading: Option<String>,
@@ -458,6 +460,7 @@ impl ViewState {
             comment: String::new(),
             comment_cursor: 0,
             comment_focused: false,
+            pr_draft: None,
             pr_review: None,
             merge: None,
             loading: None,
@@ -614,7 +617,7 @@ impl ViewState {
             Overlay::Branches => self.branches.len(),
             Overlay::PullRequests => self.prs.len(),
             Overlay::Review => ReviewKind::CHOICES.len(),
-            Overlay::Merge => 0,
+            Overlay::Merge | Overlay::Draft => 0,
         }
     }
 
